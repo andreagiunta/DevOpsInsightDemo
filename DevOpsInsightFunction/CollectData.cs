@@ -13,6 +13,8 @@ using System.Text;
 using System.Net.Http.Json;
 using System.Linq;
 using System.Text.Json.Serialization;
+using System.Security.Cryptography.X509Certificates;
+using DevOpsInsightFunction.OrmLayer;
 
 namespace DevOpsInsightFunction
 {
@@ -20,17 +22,19 @@ namespace DevOpsInsightFunction
     {
 
         private readonly HttpClient httpClient;
-        private string baseApi = System.Environment.GetEnvironmentVariable("BaseApi");
-        private string PAT = System.Environment.GetEnvironmentVariable("PAT");
+        private readonly IDataStore dataStore;
+        private string baseApi = Environment.GetEnvironmentVariable("BaseApi");
+        private string PAT = Environment.GetEnvironmentVariable("PAT");
         private Dictionary<string, Dictionary<string, string>> ProjectQueries = new Dictionary<string, Dictionary<string, string>>(); // {ProjectName,{QueryName,QueryID}}
         private Dictionary<string, Dictionary<string, int>> QueriesResult = new Dictionary<string, Dictionary<string, int>>(); // {ProjectName,{QueryName,Results}}
-        private string[] queriesNameList = System.Environment.GetEnvironmentVariable("Queries").Split(",");
-        public CollectData(HttpClient httpClient)
+        private string[] queriesNameList = Environment.GetEnvironmentVariable("Queries").Split(",");
+        public CollectData(HttpClient httpClient, IDataStore dataStore)
         {
             this.httpClient = httpClient;
+            this.dataStore = dataStore;
             httpClient.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic",
                     Convert.ToBase64String(
-                        System.Text.ASCIIEncoding.ASCII.GetBytes(
+                        Encoding.ASCII.GetBytes(
                             string.Format("{0}:{1}", "", PAT))));
         }
 
@@ -41,14 +45,14 @@ namespace DevOpsInsightFunction
             try
             {
                 var projects = await httpClient.GetFromJsonAsync<ProjectDto>($"{baseApi}/_apis/projects");
-                foreach (var project in projects.value.Where(x=>x.name.StartsWith("DevOps")))
+                foreach (var project in projects.value.Where(x => x.name.StartsWith("DevOps")))
                 {
                     var queries = await GetQueries(project.name);
                     ProjectQueries.TryAdd(
                         project.name,
                         queries.value.ToDictionary(x => x.name, x => x.id));
                 }
-                
+
                 //Should be moved on a Fan-Out / Fan-In design pattern upon
                 //DurableFunction availabilities on IsolatedProcess
 
@@ -64,15 +68,21 @@ namespace DevOpsInsightFunction
                     QueriesResult.TryAdd(project.Key, internalResult);
                 }
 
+
+
                 //Make csv
                 StringBuilder sb = new StringBuilder();
                 foreach (var project in QueriesResult)
                 {
+                    Guid ProjectID = dataStore.GetProjectId(project.Key);
                     sb.AppendLine($"{project.Key},QueryName,Count");
                     foreach (var queryItem in project.Value)
+                    {
+                        Guid QueryId = dataStore.GetQueryId(queryItem.Key);
+                        dataStore.UpdateSnapshot(QueryId, ProjectID, queryItem.Value);
                         sb.AppendLine($",{queryItem.Key},{queryItem.Value},");
+                    }
                 }
-                
 
                 //Returning as FileContent
                 string csv = sb.ToString();
@@ -116,11 +126,11 @@ namespace DevOpsInsightFunction
                 using (HttpClient client = new HttpClient())
                 {
                     client.DefaultRequestHeaders.Accept.Add(
-                        new System.Net.Http.Headers.MediaTypeWithQualityHeaderValue("application/json"));
+                        new MediaTypeWithQualityHeaderValue("application/json"));
 
                     client.DefaultRequestHeaders.Authorization = new AuthenticationHeaderValue("Basic",
                         Convert.ToBase64String(
-                            System.Text.ASCIIEncoding.ASCII.GetBytes(
+                            Encoding.ASCII.GetBytes(
                                 string.Format("{0}:{1}", "", PAT))));
 
                     using (HttpResponseMessage response = await client.GetAsync($"{baseApi}/{projectName}/_apis/wit/wiql/{queryId}?api-version=6.0"))
@@ -144,3 +154,25 @@ namespace DevOpsInsightFunction
     }
 }
 
+namespace DevOpsInsightFunction.OrmLayer.Entities
+{
+    public struct QueryEntity
+    {
+        public Guid QueryId { get; set; }
+        public string QueryName { get; set; }
+    }
+
+    public struct ProjectEntity
+    {
+        public Guid ProjectId { get; set; }
+        public string ProjectName { get; set; }
+        public string Description { get; set; }   
+    }
+    public struct SnapshotEntity
+    {
+        public Guid QueryId { get; set; }
+        public Guid ProjectId { get; set; }
+        public DateTime Timestamp { get; set; }
+        public int Value { get; set; }
+    }
+}

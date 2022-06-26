@@ -6,6 +6,10 @@
     "storage1": {
       "type": "storage.emulator",
       "connectionId": "AzureWebJobsStorage"
+    },
+    "mssql1": {
+      "ignored": "true",
+      "type": "mssql"
     }
   }
 }
